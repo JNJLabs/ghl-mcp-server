@@ -3,6 +3,7 @@ import fetch from "node-fetch";
 
 const app = express();
 app.use(express.json());
+app.set("trust proxy", 1);
 
 const GHL_API_KEY = process.env.GOHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GOHL_ACCOUNT_ID;
@@ -10,7 +11,7 @@ const GHL_BASE = "https://services.leadconnectorhq.com";
 
 // ── OAuth metadata (required by Perplexity MCP) ─────────────────────────────
 app.get("/.well-known/oauth-authorization-server", (req, res) => {
-  const base = `${req.protocol}://${req.get("host")}`;
+  const base = "https://earnest-motivation-production-a681.up.railway.app";
   res.json({
     issuer: base,
     authorization_endpoint: `${base}/oauth/authorize`,
