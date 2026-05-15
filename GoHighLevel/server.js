@@ -8,7 +8,46 @@ const GHL_API_KEY = process.env.GOHL_API_KEY;
 const GHL_LOCATION_ID = process.env.GOHL_ACCOUNT_ID;
 const GHL_BASE = "https://services.leadconnectorhq.com";
 
-// ── MCP discovery endpoint ──────────────────────────────────────────────────
+// ── OAuth metadata (required by Perplexity MCP) ─────────────────────────────
+app.get("/.well-known/oauth-authorization-server", (req, res) => {
+  const base = `${req.protocol}://${req.get("host")}`;
+  res.json({
+    issuer: base,
+    authorization_endpoint: `${base}/oauth/authorize`,
+    token_endpoint: `${base}/oauth/token`,
+    registration_endpoint: `${base}/oauth/register`,
+    response_types_supported: ["code"],
+    grant_types_supported: ["authorization_code"],
+    code_challenge_methods_supported: ["S256"]
+  });
+});
+
+app.post("/oauth/register", (req, res) => {
+  const clientId = "ghl-mcp-client-" + Date.now();
+  res.status(201).json({
+    client_id: clientId,
+    client_secret: "not-used",
+    redirect_uris: req.body.redirect_uris || [],
+    grant_types: ["authorization_code"],
+    response_types: ["code"]
+  });
+});
+
+app.get("/oauth/authorize", (req, res) => {
+  const { redirect_uri, state } = req.query;
+  const code = "ghl-auth-code-" + Date.now();
+  res.redirect(`${redirect_uri}?code=${code}&state=${state}`);
+});
+
+app.post("/oauth/token", (req, res) => {
+  res.json({
+    access_token: "ghl-static-token",
+    token_type: "bearer",
+    expires_in: 86400
+  });
+});
+
+// ── MCP discovery endpoint ───────────────────────────────────────────────────
 app.get("/mcp", (req, res) => {
   res.json({
     schema_version: "v1",
@@ -44,7 +83,7 @@ app.get("/mcp", (req, res) => {
       },
       {
         name: "update_lead_status",
-        description: "Update a contact's tags or pipeline stage",
+        description: "Update a contact tags or pipeline stage",
         parameters: {
           type: "object",
           properties: {
@@ -62,7 +101,7 @@ app.get("/mcp", (req, res) => {
   });
 });
 
-// ── MCP tool execution endpoint ─────────────────────────────────────────────
+// ── MCP tool execution endpoint ──────────────────────────────────────────────
 app.post("/mcp", async (req, res) => {
   const { tool, parameters } = req.body;
 
@@ -119,7 +158,7 @@ app.post("/mcp", async (req, res) => {
   }
 });
 
-// ── Health check ────────────────────────────────────────────────────────────
+// ── Health check ─────────────────────────────────────────────────────────────
 app.get("/", (req, res) => res.send("GoHighLevel MCP Server is running!"));
 
 const PORT = process.env.PORT || 3000;
