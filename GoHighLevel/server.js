@@ -1,4 +1,4 @@
-// GoHighLevel MCP Server (v2.1)
+// GoHighLevel MCP Server (v3.0)
 // A real Model Context Protocol server (JSON-RPC over Streamable HTTP).
 // Exposes GoHighLevel CRM tools to MCP clients like Claude.
 //
@@ -19,7 +19,6 @@ const GHL_BASE = "https://services.leadconnectorhq.com";
 const PORT = process.env.PORT || 3000;
 
 // ── Helper: call the GoHighLevel REST API ───────────────────────────────────
-// `version` lets specific endpoints use the API version they expect.
 async function ghlFetch(path, { version = "2021-07-28", ...options } = {}) {
   const res = await fetch(`${GHL_BASE}${path}`, {
     ...options,
@@ -46,6 +45,9 @@ async function ghlFetch(path, { version = "2021-07-28", ...options } = {}) {
   return data;
 }
 
+// Convert an ISO date string to GHL's expected millisecond epoch.
+const toEpochMs = (iso) => String(new Date(iso).getTime());
+
 // Shorthand for returning a tool result as a text block.
 const text = (data) => ({
   content: [
@@ -60,7 +62,7 @@ const text = (data) => ({
 function buildServer() {
   const server = new McpServer({
     name: "gohighlevel-mcp",
-    version: "2.1.0",
+    version: "3.0.0",
   });
 
   // ─── Contacts ──────────────────────────────────────────────────────────────
@@ -74,12 +76,12 @@ function buildServer() {
           .describe("How many leads to fetch (default 20, max 100)"),
       },
     },
-    async ({ limit }) => {
-      const data = await ghlFetch(
-        `/contacts/?locationId=${GHL_LOCATION_ID}&limit=${limit || 20}`
-      );
-      return text(data);
-    }
+    async ({ limit }) =>
+      text(
+        await ghlFetch(
+          `/contacts/?locationId=${GHL_LOCATION_ID}&limit=${limit || 20}`
+        )
+      )
   );
 
   server.registerTool(
@@ -114,7 +116,7 @@ function buildServer() {
       )
   );
 
-  // ─── Conversations: SMS & Email ────────────────────────────────────────────
+  // ─── Conversations: send SMS / email ───────────────────────────────────────
   server.registerTool(
     "send_sms_to_lead",
     {
@@ -166,6 +168,53 @@ function buildServer() {
             html: body,
           }),
         })
+      )
+  );
+
+  // ─── Conversations: history ────────────────────────────────────────────────
+  server.registerTool(
+    "search_conversations",
+    {
+      title: "Search conversations",
+      description:
+        "Search conversations in this location. Optionally filter by contact.",
+      inputSchema: {
+        contact_id: z.string().optional().describe("Filter by contact ID"),
+        limit: z.number().int().positive().max(100).optional()
+          .describe("How many conversations (default 20, max 100)"),
+      },
+    },
+    async ({ contact_id, limit }) => {
+      const params = new URLSearchParams({
+        locationId: GHL_LOCATION_ID,
+        limit: String(limit || 20),
+      });
+      if (contact_id) params.set("contactId", contact_id);
+      return text(
+        await ghlFetch(`/conversations/search?${params.toString()}`, {
+          version: "2021-04-15",
+        })
+      );
+    }
+  );
+
+  server.registerTool(
+    "get_conversation_messages",
+    {
+      title: "Get conversation messages",
+      description: "Get the messages in a specific conversation.",
+      inputSchema: {
+        conversation_id: z.string().describe("Conversation ID"),
+        limit: z.number().int().positive().max(100).optional()
+          .describe("How many messages (default 20, max 100)"),
+      },
+    },
+    async ({ conversation_id, limit }) =>
+      text(
+        await ghlFetch(
+          `/conversations/${conversation_id}/messages?limit=${limit || 20}`,
+          { version: "2021-04-15" }
+        )
       )
   );
 
@@ -299,6 +348,200 @@ function buildServer() {
       )
   );
 
+  server.registerTool(
+    "get_funnel_page",
+    {
+      title: "Get funnel page details",
+      description: "Get details of a specific page in a funnel.",
+      inputSchema: {
+        page_id: z.string().describe("Funnel page ID"),
+      },
+    },
+    async ({ page_id }) =>
+      text(
+        await ghlFetch(
+          `/funnels/page/${page_id}?locationId=${GHL_LOCATION_ID}`
+        )
+      )
+  );
+
+  // ─── Workflows ─────────────────────────────────────────────────────────────
+  server.registerTool(
+    "list_workflows",
+    {
+      title: "List workflows",
+      description: "List all automation workflows in this location.",
+      inputSchema: {},
+    },
+    async () =>
+      text(await ghlFetch(`/workflows/?locationId=${GHL_LOCATION_ID}`))
+  );
+
+  server.registerTool(
+    "add_lead_to_workflow",
+    {
+      title: "Add a lead to a workflow",
+      description: "Enroll a contact into an automation workflow.",
+      inputSchema: {
+        contact_id: z.string().describe("Contact ID"),
+        workflow_id: z.string().describe("Workflow ID"),
+      },
+    },
+    async ({ contact_id, workflow_id }) =>
+      text(
+        await ghlFetch(
+          `/contacts/${contact_id}/workflow/${workflow_id}`,
+          { method: "POST" }
+        )
+      )
+  );
+
+  server.registerTool(
+    "remove_lead_from_workflow",
+    {
+      title: "Remove a lead from a workflow",
+      description: "Remove a contact from an automation workflow.",
+      inputSchema: {
+        contact_id: z.string().describe("Contact ID"),
+        workflow_id: z.string().describe("Workflow ID"),
+      },
+    },
+    async ({ contact_id, workflow_id }) =>
+      text(
+        await ghlFetch(
+          `/contacts/${contact_id}/workflow/${workflow_id}`,
+          { method: "DELETE" }
+        )
+      )
+  );
+
+  // ─── Calendars & Appointments ──────────────────────────────────────────────
+  server.registerTool(
+    "list_calendars",
+    {
+      title: "List calendars",
+      description: "List all calendars in this location.",
+      inputSchema: {},
+    },
+    async () =>
+      text(
+        await ghlFetch(`/calendars/?locationId=${GHL_LOCATION_ID}`, {
+          version: "2021-04-15",
+        })
+      )
+  );
+
+  server.registerTool(
+    "list_calendar_events",
+    {
+      title: "List calendar events",
+      description:
+        "List calendar events / appointments within a date range. Optionally filter by calendar.",
+      inputSchema: {
+        start_time: z.string()
+          .describe("Start time as ISO 8601, e.g. '2026-05-19T00:00:00Z'"),
+        end_time: z.string()
+          .describe("End time as ISO 8601, e.g. '2026-05-26T00:00:00Z'"),
+        calendar_id: z.string().optional()
+          .describe("Filter to one calendar (optional)"),
+      },
+    },
+    async ({ start_time, end_time, calendar_id }) => {
+      const params = new URLSearchParams({
+        locationId: GHL_LOCATION_ID,
+        startTime: toEpochMs(start_time),
+        endTime: toEpochMs(end_time),
+      });
+      if (calendar_id) params.set("calendarId", calendar_id);
+      return text(
+        await ghlFetch(`/calendars/events?${params.toString()}`, {
+          version: "2021-04-15",
+        })
+      );
+    }
+  );
+
+  server.registerTool(
+    "get_calendar_free_slots",
+    {
+      title: "Get free time slots on a calendar",
+      description: "Find available booking slots in a calendar's date range.",
+      inputSchema: {
+        calendar_id: z.string().describe("Calendar ID"),
+        start_date: z.string()
+          .describe("Start date as ISO 8601, e.g. '2026-05-19T00:00:00Z'"),
+        end_date: z.string()
+          .describe("End date as ISO 8601, e.g. '2026-05-26T00:00:00Z'"),
+        timezone: z.string().optional()
+          .describe("IANA timezone (e.g. 'America/Toronto'). Defaults to GHL location default."),
+      },
+    },
+    async ({ calendar_id, start_date, end_date, timezone }) => {
+      const params = new URLSearchParams({
+        startDate: toEpochMs(start_date),
+        endDate: toEpochMs(end_date),
+      });
+      if (timezone) params.set("timezone", timezone);
+      return text(
+        await ghlFetch(
+          `/calendars/${calendar_id}/free-slots?${params.toString()}`,
+          { version: "2021-04-15" }
+        )
+      );
+    }
+  );
+
+  server.registerTool(
+    "create_appointment",
+    {
+      title: "Book a calendar appointment",
+      description:
+        "Create an appointment for a contact on a calendar. Times in ISO 8601.",
+      inputSchema: {
+        calendar_id: z.string().describe("Calendar ID"),
+        contact_id: z.string().describe("Contact ID booking the appointment"),
+        start_time: z.string()
+          .describe("Start as ISO 8601, e.g. '2026-05-20T14:00:00-04:00'"),
+        end_time: z.string()
+          .describe("End as ISO 8601, e.g. '2026-05-20T14:30:00-04:00'"),
+        title: z.string().optional().describe("Appointment title"),
+        appointment_status: z
+          .enum(["new", "confirmed", "cancelled", "showed", "noshow"])
+          .optional()
+          .describe("Appointment status (default: new)"),
+        notes: z.string().optional().describe("Notes for the appointment"),
+      },
+    },
+    async ({
+      calendar_id,
+      contact_id,
+      start_time,
+      end_time,
+      title,
+      appointment_status,
+      notes,
+    }) => {
+      const body = {
+        locationId: GHL_LOCATION_ID,
+        calendarId: calendar_id,
+        contactId: contact_id,
+        startTime: start_time,
+        endTime: end_time,
+      };
+      if (title) body.title = title;
+      if (appointment_status) body.appointmentStatus = appointment_status;
+      if (notes) body.notes = notes;
+      return text(
+        await ghlFetch(`/calendars/events/appointments`, {
+          version: "2021-04-15",
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        })
+      );
+    }
+  );
+
   return server;
 }
 
@@ -347,7 +590,7 @@ app.get("/mcp", methodNotAllowed);
 app.delete("/mcp", methodNotAllowed);
 
 app.listen(PORT, () => {
-  console.log(`GoHighLevel MCP server v2.1 running on port ${PORT}`);
+  console.log(`GoHighLevel MCP server v3.0 running on port ${PORT}`);
   if (!GHL_API_KEY || !GHL_LOCATION_ID) {
     console.warn(
       "WARNING: GOHL_API_KEY or GOHL_ACCOUNT_ID is not set — tool calls will fail until they are."
