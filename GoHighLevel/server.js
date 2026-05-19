@@ -225,4 +225,132 @@ function buildServer() {
       const body = {
         locationId: GHL_LOCATION_ID,
         pipelineId: pipeline_id,
-        pipelineStageId: pipeline_stage
+        pipelineStageId: pipeline_stage_id,
+        contactId: contact_id,
+        status: status || "open",
+      };
+      if (name) body.name = name;
+      if (monetary_value !== undefined) body.monetaryValue = monetary_value;
+      return text(
+        await ghlFetch(`/opportunities/`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        })
+      );
+    }
+  );
+
+  server.registerTool(
+    "update_opportunity_stage",
+    {
+      title: "Move opportunity to a different stage",
+      description: "Update an opportunity's pipeline stage and/or status.",
+      inputSchema: {
+        opportunity_id: z.string().describe("Opportunity ID"),
+        pipeline_id: z.string().describe("Pipeline ID the opportunity belongs to"),
+        pipeline_stage_id: z.string().optional().describe("New pipeline stage ID"),
+        status: z.enum(["open", "won", "lost", "abandoned"]).optional()
+          .describe("New status"),
+      },
+    },
+    async ({ opportunity_id, pipeline_id, pipeline_stage_id, status }) => {
+      const body = { pipelineId: pipeline_id };
+      if (pipeline_stage_id) body.pipelineStageId = pipeline_stage_id;
+      if (status) body.status = status;
+      return text(
+        await ghlFetch(`/opportunities/${opportunity_id}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        })
+      );
+    }
+  );
+
+  // ─── Funnels ───────────────────────────────────────────────────────────────
+  server.registerTool(
+    "list_funnels",
+    {
+      title: "List funnels",
+      description: "List all funnels in this GoHighLevel location.",
+      inputSchema: {},
+    },
+    async () =>
+      text(
+        await ghlFetch(`/funnels/funnel/list?locationId=${GHL_LOCATION_ID}`)
+      )
+  );
+
+  server.registerTool(
+    "list_funnel_pages",
+    {
+      title: "List pages in a funnel",
+      description: "List the pages inside a specific funnel.",
+      inputSchema: {
+        funnel_id: z.string().describe("Funnel ID"),
+      },
+    },
+    async ({ funnel_id }) =>
+      text(
+        await ghlFetch(
+          `/funnels/page?locationId=${GHL_LOCATION_ID}&funnelId=${funnel_id}`
+        )
+      )
+  );
+
+  return server;
+}
+
+// ── HTTP layer ──────────────────────────────────────────────────────────────
+const app = express();
+app.use(express.json());
+
+// Health check
+app.get("/", (req, res) => res.send("GoHighLevel MCP Server is running!"));
+
+// MCP endpoint — stateless: a new server + transport is created per request.
+app.post("/mcp", async (req, res) => {
+  try {
+    const server = buildServer();
+    const transport = new StreamableHTTPServerTransport({
+      sessionIdGenerator: undefined, // stateless mode
+    });
+
+    res.on("close", () => {
+      transport.close();
+      server.close();
+    });
+
+    await server.connect(transport);
+    await transport.handleRequest(req, res, req.body);
+  } catch (err) {
+    console.error("MCP request error:", err);
+    if (!res.headersSent) {
+      res.status(500).json({
+        jsonrpc: "2.0",
+        error: { code: -32603, message: "Internal server error" },
+        id: null,
+      });
+    }
+  }
+});
+
+// In stateless mode there is no session to GET (stream) or DELETE.
+const methodNotAllowed = (req, res) =>
+  res.status(405).json({
+    jsonrpc: "2.0",
+    error: { code: -32000, message: "Method not allowed. Use POST." },
+    id: null,
+  });
+app.get("/mcp", methodNotAllowed);
+app.delete("/mcp", methodNotAllowed);
+
+app.listen(PORT, () => {
+  console.log(`GoHighLevel MCP server v2.1 running on port ${PORT}`);
+  if (!GHL_API_KEY || !GHL_LOCATION_ID) {
+    console.warn(
+      "WARNING: GOHL_API_KEY or GOHL_ACCOUNT_ID is not set — tool calls will fail until they are."
+    );
+  }
+});
